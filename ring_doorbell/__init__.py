@@ -6,17 +6,18 @@ try:
 except ImportError:
     from urllib import urlencode
 
+from typing import Callable
 import logging
 import time
 import requests
+import datetime
 
 from ring_doorbell.utils import _exists_cache, _save_cache, _read_cache
 
 from ring_doorbell.const import (
     API_VERSION, API_URI, CACHE_ATTRS, CACHE_FILE,
     DEVICES_ENDPOINT, HEADERS, NEW_SESSION_ENDPOINT, MSG_GENERIC_FAIL,
-    POST_DATA, PERSIST_TOKEN_ENDPOINT, PERSIST_TOKEN_DATA, RETRY_TOKEN,
-    TIMEOUT)
+    POST_DATA, PERSIST_TOKEN_ENDPOINT, PERSIST_TOKEN_DATA, RETRY_TOKEN)
 
 from ring_doorbell.doorbot import RingDoorBell
 from ring_doorbell.chime import RingChime
@@ -32,19 +33,16 @@ class Ring(object):
     """A Python Abstraction object to Ring Door Bell."""
 
     def __init__(self, username, password,
-                 auth_callback=None,
+                 auth_callback: Callable[[], str] = None,
                  debug=False, persist_token=False,
                  push_token_notify_url="http://localhost/", reuse_session=True,
-                 cache_file=CACHE_FILE, timeout=TIMEOUT):
-        """Initialize the Ring object.
-        :type auth_callback: Callable[[], str]
-        """
+                 cache_file=CACHE_FILE):
+        """Initialize the Ring object."""
         self.is_connected = None
         self.token = None
         self.params = None
         self._persist_token = persist_token
         self._push_token_notify_url = push_token_notify_url
-        self._timeout = timeout
 
         self.debug = debug
         self.username = username
@@ -53,6 +51,7 @@ class Ring(object):
 
         self.auth_callback = auth_callback
         self.auth = None
+        self.last_refresh = None
 
         self.cache = CACHE_ATTRS
         self.cache['account'] = self.username
@@ -111,7 +110,14 @@ class Ring(object):
                 self.password,
                 self.auth_callback)
         else:
-            self.auth = oauth.refresh_tokens()
+            if self.last_refresh:
+                refreshAt = self.last_refresh + datetime.timedelta(seconds=self.auth['expires_in'])
+
+            if not self.last_refresh or (datetime.datetime.now() >= refreshAt):
+                self.auth = oauth.refresh_tokens()
+                self.last_refresh = datetime.datetime.now()
+            else:
+                _LOGGER.debug("Reusing oauth token %s", str(self.auth))
 
         if self.debug:
             _LOGGER.debug("response from get oauth token %s", str(self.auth))
@@ -135,8 +141,7 @@ class Ring(object):
                 if session is None:
                     req = self.session.post((url),
                                             data=POST_DATA,
-                                            headers=modified_headers,
-                                            timeout=self._timeout)
+                                            headers=modified_headers)
                 else:
                     req = session
             except requests.exceptions.RequestException as err_msg:
@@ -166,8 +171,7 @@ class Ring(object):
                     PERSIST_TOKEN_DATA['device[push_notification_token]'] = \
                         self._push_token_notify_url
                     req = self.session.put((url), headers=modified_headers,
-                                           data=PERSIST_TOKEN_DATA,
-                                           timeout=self._timeout)
+                                           data=PERSIST_TOKEN_DATA)
 
                 # update token if reuse_session is True
                 if self._reuse_session:
@@ -221,15 +225,15 @@ class Ring(object):
                 if method == 'GET':
                     req = self.session.get(
                         (url), params=urlencode(params),
-                        headers=auth_header, timeout=self._timeout)
+                        headers=auth_header)
                 elif method == 'PUT':
                     req = self.session.put(
                         (url), params=urlencode(params),
-                        headers=auth_header, timeout=self._timeout)
+                        headers=auth_header)
                 elif method == 'POST':
                     req = self.session.post(
                         (url), params=urlencode(params), json=json,
-                        headers=auth_header, timeout=self._timeout)
+                        headers=auth_header)
 
                 if self.debug:
                     _LOGGER.debug("_query %s ret %s", loop, req.status_code)
